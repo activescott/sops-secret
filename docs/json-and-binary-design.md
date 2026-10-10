@@ -118,20 +118,34 @@ with `JSON.stringify` per segment, as
 [`sopsIndex`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/format.ts?plain=1#L84-L87)
 does now. Decision 1 covers the alternatives.
 
-That is correct only because a segment containing `"` or `\` is refused. sops takes the text
-between `["` and `"]` literally and decodes no escapes. On a file holding the key `a"b`,
-`sops set --value-stdin` on `["a\"b"]` exits 0 and adds a second key `a\"b`, so `add` would
-report success and write the value under a key nobody named; `unset` on the same index fails
-with `Key not found: a\"b`. `["back\\slash"]` fails the same way, and a key containing `"]["`
-cannot be addressed at all. Keys with `]`, `/`, `~`, non-ASCII characters, or no characters
-round-trip through `JSON.stringify` as expected. Keys with `"` or `\` are changed with `edit`.
+That is correct only for keys made of the characters sops' index parser passes through
+unchanged, so a segment is accepted only when it is non-empty and every character is
+printable ASCII (U+0020 to U+007E) other than `[`, `"` and `\`. Everything else is refused
+and changed with `edit`. sops splits the whole index on `[` before it looks at quotes, then
+strips the trailing `]` and the first and last character of each piece, and decodes no
+escapes. With no `[` in any segment, each piece is `"<segment>"]` and strips back to the
+segment exactly. With one, the index means something else: on a file
+`{"":{"b":"orig"},"a]['b":"target"}`, `set` on `["a]['b"]` exits 0 and overwrites
+`[""]["b"]`, and `k[x` fails with `Invalid set index format`. `JSON.stringify` writes `"` and
+`\` as `\"` and `\\`, which sops reads literally: on a file holding `a"b`, `set` on
+`["a\"b"]` exits 0 and adds a second key `a\"b`. Either way `add` would report success and
+write under a key nobody named.
+
+The allowlist was checked on sops 3.13.3 with a throwaway age key by building the index with
+`JSON.stringify` per segment, running `set` and then `unset`, and comparing the decrypted
+tree with the expected one, next to an `[""]["b"]` decoy. All 8,935 paths passed: every
+allowed character alone and inside other text, every pair of allowed characters, keys such
+as `0`, `-1`, `" a"`, `]]` and `'`, and 400 random paths of two or three segments. `k[x`,
+`a]['b`, `a"b` and `back\slash` failed as above. Non-ASCII keys (`é`, an emoji) passed too,
+but they are refused because a sample is not the whole range, and a lone surrogate from
+`JSON.parse` would reach sops as the text `\ud800`.
 
 `ls` prints every leaf it can name: bare names for top-level keys that match the name rule,
 pointers for everything else, including a top-level key with a space or `@` in it
 (`/my key`). In a pointer it escapes each `~` as `~0` and each `/` as `~1`, so the top-level
 key `a/b` prints as `/a~1b`; printed raw it would be `/a/b`, which `rm` reads as `b` under
-`a`. A leaf whose path has a segment `add` and `rm` refuse (empty, or containing `"`, `\` or
-a control character) is not printed; `ls` says on stderr how many leaves it skipped and that
+`a`. A leaf whose path has a segment `add` and `rm` refuse (empty, or with a character
+outside the allowlist) is not printed; `ls` says on stderr how many leaves it skipped and that
 `edit` shows them, without naming them. For JSON, `add` and `rm` accept a pointer to any
 other object key, so every name `ls` prints for a leaf under objects pastes straight into
 `add` and `rm`. Array elements do not: `ls` prints them as `/list/0`, and `add` and `rm`
@@ -219,10 +233,10 @@ today.
 
 - A JSON file with no top-level `sops.mac`: `not sops-encrypted`, without echoing content.
 - A top-level `sops` key as a name, or a pointer starting `/sops`.
-- An empty pointer segment, and control characters in any name, since `ls` would print them
-  to a terminal. `ls` skips leaves with these instead of printing them.
-- A pointer segment containing `"` or `\`, since sops would read the index literally and
-  address a different key. `ls` skips these leaves too, and `edit` changes them.
+- An empty pointer segment, and a segment with any character outside printable ASCII
+  (U+0020 to U+007E) or equal to `[`, `"` or `\`, since sops would address a different key.
+  This also keeps control characters off the terminal. `ls` skips these leaves, and `edit`
+  changes them.
 - A `~` in a pointer not followed by `0` or `1`.
 - `add` or `rm` through an array or on an object, and `add` on a non-string leaf. `edit`
   covers these.
@@ -291,6 +305,10 @@ the htpasswd pipeline. CI has no terminal, but CI should not be creating secret 
 through both. Redacting sops' stderr for the bytes decoded as a string catches only a
 full echo, not a partial one. That is enough for now, since `sops encrypt` echoed no stdin in
 any error tried by hand.
+
+The allowlist applies to each segment after `~0` and `~1` are decoded, and in `ls` to the
+key as `JSON.parse` returns it, so an escaped key in the file is checked as the characters it
+stands for.
 
 ## Follow-ups
 

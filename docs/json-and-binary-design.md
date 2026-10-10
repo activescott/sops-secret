@@ -3,13 +3,15 @@
 Design for [#2](https://github.com/activescott/sops-secret/issues/2): how `edit`, `add`, `rm`
 and `ls` handle a JSON sops file (a `.dockerconfigjson`, say) and a binary one (an htpasswd
 file encrypted whole). Nothing here is implemented yet. Today
-[`formatOf`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/format.ts?plain=1#L463-L475)
+[`formatOf`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/format.ts?plain=1#L27-L39)
 refuses a file that looks like JSON, and a `*.encrypted` name with no other hint fails as an
 unknown format.
 
 The guarantee from the README stays: no secret value reaches argv, stdout or stderr, or a
 plaintext temp file that sops-secret writes. `edit` keeps its one exception, the plaintext
-copy sops itself makes for the editor.
+copy sops itself makes for the editor. sops removes that copy on a clean exit and on Ctrl+C,
+but not when it is killed: a SIGPIPE during the invalid-JSON loop left the edited plaintext
+in `/tmp/<random>/<basename>`. sops does the same for YAML today.
 
 ## Data flow
 
@@ -36,7 +38,7 @@ flowchart TB
   end
 
   subgraph sopstmp["sops' own 0700 temp dir, edit only"]
-    plain["plaintext copy,<br/>removed on exit"]
+    plain["plaintext copy,<br/>removed on exit<br/>unless sops is killed"]
   end
 
   subgraph repo["Repo working tree"]
@@ -105,17 +107,22 @@ Anything else fails as today with `cannot tell the format`.
 
 ## Naming nested JSON keys
 
-Top-level keys keep the bare name they have today: `sops-secret add app.json API_KEY`.
+Top-level keys that match today's name rule keep the bare name: `sops-secret add app.json
+API_KEY`.
 Anything deeper is a JSON Pointer ([RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)),
 written with a leading `/`: `/auths/ghcr.io/auth`. Pointers suit this because Docker config
 keys are hostnames full of dots, and `/` is rare in a key. A `/` or `~` inside a key is
 written `~1` or `~0`. sops-secret turns a pointer into the sops index (`["auths"]["ghcr.io"]["auth"]`)
 with `JSON.stringify` per segment, as
-[`sopsIndex`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/format.ts?plain=1#L520-L523)
+[`sopsIndex`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/format.ts?plain=1#L84-L87)
 does now. Decision 1 covers the alternatives.
 
-`ls` prints every leaf in the same form it accepts, so its output pastes straight into `add`
-and `rm`: bare names at the top level, pointers below it, array elements as `/list/0`.
+`ls` prints every leaf: bare names for top-level keys that match the name rule, pointers for
+everything else, including a top-level key with a space or `@` in it (`/my key`). For JSON,
+`add` and `rm` accept a pointer to any object key, refusing only the names under "What the
+CLI refuses". So every name `ls` prints for a leaf under objects pastes straight into `add`
+and `rm`. Array elements do not: `ls` prints them as `/list/0`, and `add` and `rm` refuse a
+path through an array, so those are changed with `edit`.
 
 ## Each command
 
@@ -138,7 +145,7 @@ target exists and is not a `type:str` leaf (read from the ciphertext, no decrypt
 is an object, and when the path goes through an array or through a leaf.
 
 JSON, new file: as today's
-[`createWith`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/cli.ts?plain=1#L237-L267),
+[`createWith`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/cli.ts?plain=1#L171-L201),
 building the nested object from the pointer and running `sops encrypt --input-type json
 --output-type json`. No private key.
 
@@ -155,7 +162,8 @@ beside the target and renamed, as `createWith` does (decision 3). A new file sti
 ### `rm`
 
 JSON: `sops unset --input-type json --output-type json <path> <index>` for a leaf `ls`
-printed. Refused for an object (it would drop a subtree whose names were never shown) and
+printed, of any type: a number or boolean leaf is removed the same as a string. Refused for
+an object (it would drop a subtree whose names were never shown) and
 for an array element (removing it renumbers the ones after it). An emptied parent object is
 left as `{}`.
 
@@ -171,15 +179,15 @@ will say to use `add` for those.
 
 ## How the guarantee holds
 
-| Command | Format | argv                                | stdout / stderr                                                                       | Plaintext on disk                                      |
-| ------- | ------ | ----------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `ls`    | JSON   | none (no child process)             | Key names only. A parse failure says "not valid JSON" without `JSON.parse`'s message  | None                                                   |
-| `ls`    | binary | none                                | A fixed note on stderr                                                                | None                                                   |
-| `add`   | JSON   | Path and index, which are names     | Value goes to sops on stdin. sops' stderr is redacted for the value and its JSON form | None; `set` rewrites the file in place                 |
-| `add`   | binary | Path and `--filename-override` only | Bytes go to sops on stdin. stderr redacted for the bytes as a string                  | None; the staging file beside the target is ciphertext |
-| `rm`    | JSON   | Path and index                      | No value is read                                                                      | None                                                   |
-| `rm`    | binary | n/a, refused before any sops call   | Fixed message                                                                         | None                                                   |
-| `edit`  | both   | Path and type flags                 | Editor shows values on the terminal, as today                                         | sops' own temp copy, 0700 dir, removed on exit         |
+| Command | Format | argv                                | stdout / stderr                                                                       | Plaintext on disk                                                    |
+| ------- | ------ | ----------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `ls`    | JSON   | none (no child process)             | Key names only. A parse failure says "not valid JSON" without `JSON.parse`'s message  | None                                                                 |
+| `ls`    | binary | none                                | A fixed note on stderr                                                                | None                                                                 |
+| `add`   | JSON   | Path and index, which are names     | Value goes to sops on stdin. sops' stderr is redacted for the value and its JSON form | None; `set` rewrites the file in place                               |
+| `add`   | binary | Path and `--filename-override` only | Bytes go to sops on stdin. stderr redacted for the bytes as a string                  | None; the staging file beside the target is ciphertext               |
+| `rm`    | JSON   | Path and index                      | No value is read                                                                      | None                                                                 |
+| `rm`    | binary | n/a, refused before any sops call   | Fixed message                                                                         | None                                                                 |
+| `edit`  | both   | Path and type flags                 | Editor shows values on the terminal, as today                                         | sops' own temp copy, 0700 dir, removed on exit unless sops is killed |
 
 Two leaks to design out, both checked on Node 24 and sops 3.13.3:
 
@@ -199,7 +207,8 @@ today.
 - A top-level `sops` key as a name, or a pointer starting `/sops`.
 - An empty pointer segment, and control characters in any name, since `ls` would print them
   to a terminal.
-- `add` or `rm` through an array, on an object, or on a non-string leaf. `edit` covers these.
+- `add` or `rm` through an array or on an object, and `add` on a non-string leaf. `edit`
+  covers these.
 - `rm` on a binary file, and `add` with a name on one.
 - `add` with no name on a dotenv, YAML or JSON file.
 - A JSON Kubernetes Secret (top-level `"kind": "Secret"`). A value under `/data/...` would
@@ -257,3 +266,16 @@ Recommendation: create them. The path is typed on purpose, and the message says
 
 Recommendation: read `/dev/tty`. It keeps the one approval step `add` has today and works in
 the htpasswd pipeline. CI has no terminal, but CI should not be creating secret files.
+
+## Implementation notes
+
+[`run()`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/sops.ts?plain=1#L19-L22) and
+[`sops()`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/sops.ts?plain=1#L124-L126) take `input?: string`, so binary `add` needs a Buffer path
+through both. Redacting sops' stderr for the bytes decoded as a string catches only a
+full echo, not a partial one. That is enough for now, since `sops encrypt` echoed no stdin in
+any error tried by hand.
+
+## Follow-ups
+
+- README: name JSON sops files `*.json`. A JSON file whose only key is `data`, under any
+  other name, is read as binary by rule 3 of "Telling the formats apart".

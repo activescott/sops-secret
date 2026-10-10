@@ -112,24 +112,38 @@ API_KEY`.
 Anything deeper is a JSON Pointer ([RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)),
 written with a leading `/`: `/auths/ghcr.io/auth`. Pointers suit this because Docker config
 keys are hostnames full of dots, and `/` is rare in a key. A `/` or `~` inside a key is
-written `~1` or `~0`. sops-secret turns a pointer into the sops index (`["auths"]["ghcr.io"]["auth"]`)
+written `~1` or `~0`, and a `~` followed by anything else is refused, as RFC 6901 leaves it
+invalid. sops-secret turns a pointer into the sops index (`["auths"]["ghcr.io"]["auth"]`)
 with `JSON.stringify` per segment, as
 [`sopsIndex`](https://github.com/activescott/sops-secret/blob/fa84756dcb4ae662a9accbc750a6f17e2f1bba43/src/format.ts?plain=1#L84-L87)
 does now. Decision 1 covers the alternatives.
 
-`ls` prints every leaf: bare names for top-level keys that match the name rule, pointers for
-everything else, including a top-level key with a space or `@` in it (`/my key`). For JSON,
-`add` and `rm` accept a pointer to any object key, refusing only the names under "What the
-CLI refuses". So every name `ls` prints for a leaf under objects pastes straight into `add`
-and `rm`. Array elements do not: `ls` prints them as `/list/0`, and `add` and `rm` refuse a
-path through an array, so those are changed with `edit`.
+That is correct only because a segment containing `"` or `\` is refused. sops takes the text
+between `["` and `"]` literally and decodes no escapes. On a file holding the key `a"b`,
+`sops set --value-stdin` on `["a\"b"]` exits 0 and adds a second key `a\"b`, so `add` would
+report success and write the value under a key nobody named; `unset` on the same index fails
+with `Key not found: a\"b`. `["back\\slash"]` fails the same way, and a key containing `"]["`
+cannot be addressed at all. Keys with `]`, `/`, `~`, non-ASCII characters, or no characters
+round-trip through `JSON.stringify` as expected. Keys with `"` or `\` are changed with `edit`.
+
+`ls` prints every leaf it can name: bare names for top-level keys that match the name rule,
+pointers for everything else, including a top-level key with a space or `@` in it
+(`/my key`). In a pointer it escapes each `~` as `~0` and each `/` as `~1`, so the top-level
+key `a/b` prints as `/a~1b`; printed raw it would be `/a/b`, which `rm` reads as `b` under
+`a`. A leaf whose path has a segment `add` and `rm` refuse (empty, or containing `"`, `\` or
+a control character) is not printed; `ls` says on stderr how many leaves it skipped and that
+`edit` shows them, without naming them. For JSON, `add` and `rm` accept a pointer to any
+other object key, so every name `ls` prints for a leaf under objects pastes straight into
+`add` and `rm`. Array elements do not: `ls` prints them as `/list/0`, and `add` and `rm`
+refuse a path through an array, so those are changed with `edit`.
 
 ## Each command
 
 ### `ls`
 
 JSON: parse the file with `JSON.parse` in process, check it has `sops.mac`, drop the `sops`
-key, and print each leaf path. No key and no sops call, as today.
+key, and print each leaf path, escaped and filtered as in "Naming nested JSON keys". No key
+and no sops call, as today.
 
 Binary: print nothing on stdout, and on stderr `<path> is a binary sops file: one value, no
 names; use edit`. Exit 0, so scripts that loop over `ls` keep working.
@@ -206,7 +220,10 @@ today.
 - A JSON file with no top-level `sops.mac`: `not sops-encrypted`, without echoing content.
 - A top-level `sops` key as a name, or a pointer starting `/sops`.
 - An empty pointer segment, and control characters in any name, since `ls` would print them
-  to a terminal.
+  to a terminal. `ls` skips leaves with these instead of printing them.
+- A pointer segment containing `"` or `\`, since sops would read the index literally and
+  address a different key. `ls` skips these leaves too, and `edit` changes them.
+- A `~` in a pointer not followed by `0` or `1`.
 - `add` or `rm` through an array or on an object, and `add` on a non-string leaf. `edit`
   covers these.
 - `rm` on a binary file, and `add` with a name on one.

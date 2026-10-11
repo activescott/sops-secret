@@ -1,6 +1,7 @@
 {
   "name": "sops-secret",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "Edit, add, remove and list values in sops-encrypted files, with the age key in 1Password",
   "type": "module",
   "bin": {

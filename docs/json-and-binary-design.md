@@ -246,7 +246,7 @@ today.
   need base64 that `add` does not apply, and the `stringData`/`data` handling exists only
   for YAML. The message points to YAML.
 
-## Open decisions
+## Decisions
 
 ### 1. Syntax for nested JSON keys
 
@@ -255,7 +255,7 @@ today.
   quoting every time.
 - Dotted paths, `auths.ghcr\.io.auth`. Short, but every hostname key needs escapes.
 
-Recommendation: JSON Pointer. It is a standard, needs no shell quoting, and hostnames need no
+Decided: JSON Pointer. It is a standard, needs no shell quoting, and hostnames need no
 escaping.
 
 ### 2. How a binary file is chosen for `add`
@@ -265,7 +265,7 @@ escaping.
 - A `--binary` flag on `add`.
 - A separate command, such as `put <path>`.
 
-Recommendation: no name means the whole file. A binary file has no names, so the arity says
+Decided: no name means the whole file. A binary file has no names, so the arity says
 it, and no flag or new command is needed.
 
 ### 3. How `add` replaces a binary file
@@ -275,7 +275,7 @@ it, and no flag or new command is needed.
 - `sops set --value-stdin '["data"]'` with the content as a JSON string. Keeps the file's
   recipients and needs the private key; UTF-8 content only.
 
-Recommendation: encrypt and rename. htpasswd is text, but other whole-file secrets
+Decided: encrypt and rename. htpasswd is text, but other whole-file secrets
 (keystores, certificates in DER) are not. If `.sops.yaml` has changed since the file was
 written, the replaced file follows the new recipients, which is what `sops updatekeys` would
 do anyway.
@@ -286,7 +286,7 @@ do anyway.
 - Refuse unless the parent object exists, and point to `edit`.
 - Ask `Create /auths/quay.io?` first.
 
-Recommendation: create them. The path is typed on purpose, and the message says
+Decided: create them. The path is typed on purpose, and the message says
 `Added /auths/quay.io/auth`, so a typo shows up in `ls` straight after.
 
 ### 5. Confirming a new binary file when stdin is the content
@@ -295,7 +295,7 @@ Recommendation: create them. The path is typed on purpose, and the message says
 - Skip the prompt for binary, and create on the strength of the pipe.
 - Add `--yes` for scripts, and refuse without it when stdin is a pipe.
 
-Recommendation: read `/dev/tty`. It keeps the one approval step `add` has today and works in
+Decided: read `/dev/tty`. It keeps the one approval step `add` has today and works in
 the htpasswd pipeline. CI has no terminal, but CI should not be creating secret files.
 
 ## Implementation notes

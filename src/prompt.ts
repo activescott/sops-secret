@@ -65,9 +65,16 @@ export class Prompter {
         this.buffer = this.buffer.slice(1)
         if (char === "\r" || char === "\n" || char === "\x04") return value
         if (char === "\x03") fail("cancelled", 130)
-        if (char === "\x7f" || char === "\b") value = [...value].slice(0, -1).join("")
-        else if (char === "\x15") value = ""
-        else value += char
+        if (char === "\x7f" || char === "\b") {
+          if (value.length > 0) this.output.write("\b \b")
+          value = [...value].slice(0, -1).join("")
+        } else if (char === "\x15") {
+          this.output.write("\b \b".repeat([...value].length))
+          value = ""
+        } else {
+          value += char
+          this.output.write("*")
+        }
       }
     } finally {
       this.input.setRawMode(false)

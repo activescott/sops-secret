@@ -64,3 +64,11 @@ Commit it. It names where the key is and holds no secret, and nobody is asked ag
   through `SOPS_AGE_KEY` in the child's environment. It is never written to disk or passed
   as an argument, and the editor runs without it. Other `SOPS_*` variables and any local
   `keys.txt` are ignored.
+
+## Releasing
+
+[release-please](https://github.com/googleapis/release-please) opens and updates a release
+PR from conventional commits on `main`. Merging it tags a release, which
+`.github/workflows/release.yml` publishes to npm with
+[provenance](https://docs.npmjs.com/generating-provenance-statements) via OIDC trusted
+publishing: no `NPM_TOKEN` is stored anywhere.

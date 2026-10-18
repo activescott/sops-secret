@@ -76,7 +76,7 @@ class Session {
     if (config) return readAgeKey(config.ageKeyRef)
 
     note(
-      `No 1Password reference for the age private key yet; it will be saved in ${this.show(path)}.`,
+      `No 1Password reference for the age private key yet; the reference will be saved in ${this.show(path)} and the private key itself will only be saved in 1Password.`,
     )
     const answer = await this.prompter.line("1Password reference (vault/item/field or op://...): ")
     const ageKeyRef = normalizeRef(answer)
